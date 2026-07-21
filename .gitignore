@@ -44,3 +44,12 @@ modelfiles/
 .env
 .venv/
 venv/
+
+# Personal scratch and cross-repo artifacts — must never enter this neutral repo.
+# (Pre-filing patent drafts, experiment output, sibling-repo files.)
+*.html
+Untitled-*.md
+samsung-*
+docs/agents-team-hot-items-*.md
+NVIDIA Corporation/
+*/umdlogs/
