@@ -10,11 +10,14 @@ Use this skill when a repository needs a neutral consistency review of its docum
 ## Principles
 
 - Scan only the current repository unless the user explicitly provides another path.
+- Keep every scan path and report path inside the selected repository root; reject resolved symlink escapes.
 - Do not scan user-global home folders by default.
 - Do not modify source documents automatically.
 - Preserve file and line references for every finding.
 - Write generated reports under an ignored directory such as `build/self_heal/`.
 - Treat local LLM output as advisory, not authoritative.
+- Treat the Ollama option as local data disclosure: enable it only when the loopback service and selected model are approved for the documents. Pin the model tag in reproducible environments.
+- Keep file-size and pair-count limits enabled for untrusted repositories.
 
 ## Default Command
 
@@ -43,3 +46,4 @@ python .\auto_grill.py scan
 - Do not commit generated findings unless explicitly requested.
 - Do not apply LLM-generated corrections directly.
 - Do not include raw sensitive documents in prompts or logs.
+- Findings contain source excerpts and filenames; protect the report at the same classification as its inputs even when the model is disabled.

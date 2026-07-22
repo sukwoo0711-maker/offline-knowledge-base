@@ -24,10 +24,12 @@ from typing import Iterable
 
 DEFAULT_PATHS = ("docs", "skills")
 DEFAULT_OUTPUT = Path("build/self_heal/findings.json")
-# Small default chosen to run on low-RAM hardware. qwen2.5-coder:7b is the
-# current small coder tag; Qwen3-Coder exists but has no 7B Ollama tag (only
-# 30b/480b). On capable hardware override, e.g. AUTO_GRILL_MODEL=qwen3-coder:30b.
+# This is a compatibility default, not a claim that the tag is current or optimal.
+# Pin an internally approved model tag for reproducible use.
 DEFAULT_MODEL = os.environ.get("AUTO_GRILL_MODEL", "qwen2.5-coder:7b")
+DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_CLAIM_CHARS = 4000
+MAX_LLM_RESPONSE_BYTES = 1024 * 1024
 
 EXCLUDED_DIRS = {
     ".git",
@@ -101,21 +103,44 @@ class Finding:
     recommendation: str
 
 
-def iter_text_files(root: Path, include_paths: Iterable[str]) -> Iterable[Path]:
+def inside(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def iter_text_files(
+    root: Path,
+    include_paths: Iterable[str],
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    skipped: list[str] | None = None,
+) -> Iterable[Path]:
     for rel in include_paths:
         base = (root / rel).resolve()
+        if not inside(root, base):
+            raise ValueError(f"Scan path escapes repository root: {rel}")
         if not base.exists():
             continue
         if base.is_file():
-            yield base
+            if base.stat().st_size <= max_file_bytes:
+                yield base
+            elif skipped is not None:
+                skipped.append(base.relative_to(root).as_posix())
             continue
         for path in base.rglob("*"):
             if path.is_dir():
                 continue
+            path = path.resolve()
+            if not inside(root, path):
+                raise ValueError(f"Resolved scan file escapes repository root: {path}")
             if any(part in EXCLUDED_DIRS for part in path.parts):
                 continue
-            if path.suffix.lower() in {".md", ".txt", ".rst"}:
+            if path.suffix.lower() in {".md", ".txt", ".rst"} and path.stat().st_size <= max_file_bytes:
                 yield path
+            elif path.suffix.lower() in {".md", ".txt", ".rst"} and skipped is not None:
+                skipped.append(path.relative_to(root).as_posix())
 
 
 def tokenize(text: str) -> list[str]:
@@ -164,7 +189,7 @@ def extract_claims(root: Path, files: Iterable[Path]) -> list[Claim]:
                 continue
             if in_fence or not looks_like_rule(line):
                 continue
-            clean = re.sub(r"^[-*\d.)\s]+", "", line.strip())
+            clean = re.sub(r"^[-*\d.)\s]+", "", line.strip())[:DEFAULT_MAX_CLAIM_CHARS]
             rel = path.relative_to(root).as_posix()
             claim_id = f"{rel}:{line_number}"
             claims.append(
@@ -256,7 +281,10 @@ Shared terms: {", ".join(overlap)}
     )
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
-            raw = json.loads(response.read().decode("utf-8")).get("response", "")
+            body = response.read(MAX_LLM_RESPONSE_BYTES + 1)
+            if len(body) > MAX_LLM_RESPONSE_BYTES:
+                return None
+            raw = json.loads(body.decode("utf-8")).get("response", "")
     except Exception:
         return None
     match = re.search(r"\{.*\}", raw, re.S)
@@ -277,9 +305,19 @@ Shared terms: {", ".join(overlap)}
     )
 
 
-def scan(root: Path, paths: Iterable[str], output: Path, max_pairs: int, model: str) -> dict:
+def scan(
+    root: Path,
+    paths: Iterable[str],
+    output: Path,
+    max_pairs: int,
+    model: str,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+) -> dict:
     root = root.resolve()
-    files = sorted(set(iter_text_files(root, paths)))
+    if max_pairs < 0 or max_file_bytes < 1:
+        raise ValueError("max_pairs must be non-negative and max_file_bytes must be positive")
+    skipped_files: list[str] = []
+    files = sorted(set(iter_text_files(root, paths, max_file_bytes, skipped_files)))
     claims = extract_claims(root, files)
     pairs = related_pairs(claims)[:max_pairs]
 
@@ -293,13 +331,15 @@ def scan(root: Path, paths: Iterable[str], output: Path, max_pairs: int, model: 
         "root": root.name,  # repo dir name only; avoid leaking absolute local paths
         "paths": list(paths),
         "file_count": len(files),
+        "max_file_bytes": max_file_bytes,
+        "skipped_oversize_files": sorted(set(skipped_files)),
         "claim_count": len(claims),
         "pair_count": len(pairs),
         "llm_enabled": os.environ.get("AUTO_GRILL_USE_LLM") == "1",
         "findings": [asdict(item) for item in findings],
     }
-    output_path = (root / output).resolve() if not output.is_absolute() else output
-    if not str(output_path).lower().startswith(str(root).lower()):
+    output_path = ((root / output) if not output.is_absolute() else output).resolve()
+    if not inside(root, output_path):
         raise ValueError(f"Output must stay inside repo: {output_path}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -313,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paths", nargs="*", default=list(DEFAULT_PATHS), help="Relative files or folders to scan.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Relative JSON report path.")
     parser.add_argument("--max-pairs", type=int, default=50, help="Maximum related pairs to review.")
+    parser.add_argument("--max-file-bytes", type=int, default=DEFAULT_MAX_FILE_BYTES,
+                        help="Skip larger text files before reading them.")
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Local Ollama model when AUTO_GRILL_USE_LLM=1.")
     return parser
 
@@ -326,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             output=Path(args.output),
             max_pairs=args.max_pairs,
             model=args.model,
+            max_file_bytes=args.max_file_bytes,
         )
         print(
             "scan complete: "

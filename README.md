@@ -41,17 +41,19 @@ local LLM 판정을 켜려면 Ollama 실행 후:
 
 ```powershell
 $env:AUTO_GRILL_USE_LLM = "1"
-$env:AUTO_GRILL_MODEL = "qwen2.5-coder:7b"   # 저사양 기본값. 고사양은 qwen3-coder:30b 등으로 교체
+$env:AUTO_GRILL_MODEL = "<internally-approved-model-tag>"
 python .\auto_grill.py scan
 ```
 
-> 모델 태그는 환경에 맞는 최신 코더 모델로 교체할 수 있습니다. Qwen3-Coder는 7B 태그가 없으므로(30b/480b만 존재) 기본값은 동작이 검증된 qwen2.5-coder:7b로 둡니다.
+> 내장 모델명은 호환성 기본값일 뿐 최신성·적합성을 보장하지 않습니다. 재현 가능한 환경에서는 내부 승인·고정된 태그를 명시하십시오. 로컬 LLM을 켜면 문서 발췌가 loopback Ollama 서비스로 전달되며, 결과 보고서에도 원문 발췌와 파일명이 포함됩니다.
 
 SQLite를 Markdown으로 내보내기:
 
 ```powershell
 python .\sqlite_to_obsidian.py .\data\input.db .\build\markdown-export --clean
 ```
+
+첫 내보내기는 `--clean` 없이 실행해 관리 디렉터리 표식을 만듭니다. 이후 `--clean`은 이 표식이 있는 출력 폴더에서만 동작합니다. 데이터베이스·행·셀·문서 파일에는 기본 자원 상한이 있으며 CLI 옵션으로 조정할 수 있습니다.
 
 ## 운영 원칙
 
